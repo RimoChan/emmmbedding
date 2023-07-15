@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, PlainTextRes
 
 
 vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse")
+torch.set_grad_enabled(False)
 app = FastAPI()
 
 
@@ -28,22 +29,30 @@ def _encode(img_bytes: bytes) -> bytes:
         新img = cv2.resize(img, (int(y / r), int(x / r)), interpolation=cv2.INTER_AREA)
     新img = torch.from_numpy(新img.transpose((2, 0, 1))).float().div(255).unsqueeze(0)
     iimg = vae.encode(新img)
-    v = iimg.latent_dist.sample()
-    print(v, v.shape)
+    v = iimg.latent_dist.mean
+    # print(v, v.shape)
     iiimg = v.detach().numpy()
     q, w = np.percentile(iiimg, [0.1, 99.9])
     iiimg = (((np.clip(iiimg, q, w) - q) / (w - q)) * 255).astype('uint8')
-    iiimg = iiimg.squeeze(0)
+    iiimg = iiimg.squeeze(0)  # CHW
+    # print(len(iiimg.tobytes()))
+    succ, comp = cv2.imencode(".webp", iiimg.reshape(-1, iiimg.shape[-1]), [cv2.IMWRITE_WEBP_QUALITY, 95])
+    if not succ:
+        raise ValueError("Latent Compression failed.")
     meta = struct.pack('ffII', q, w, iiimg.shape[1], iiimg.shape[2])
-    b = lzma.compress(meta + iiimg.tobytes(), preset=9, format=lzma.FORMAT_ALONE)
+    # b = lzma.compress(meta + comp.reshape(-1).tobytes(), preset=9, format=lzma.FORMAT_ALONE)
+    b = meta + comp.reshape(-1).tobytes()
+    # print(len(b), len(lzma.compress(meta + iiimg.reshape(-1).tobytes(), preset=9, format=lzma.FORMAT_ALONE)))
     return b
 
 
 @lru_cache(maxsize=128)
 def _decode(e_bytes: bytes) -> bytes:
-    data = lzma.decompress(e_bytes)
+    # data = lzma.decompress(e_bytes)
+    data = e_bytes
     q, w, x, y = struct.unpack('ffII', data[:16])
-    iiimg = np.frombuffer(data[16:], dtype='uint8').reshape((4, x, y))
+    pbytes = np.frombuffer(data[16:], dtype='uint8')
+    iiimg = cv2.imdecode(pbytes, cv2.IMREAD_GRAYSCALE).reshape(4, x, y)
     v = torch.from_numpy(iiimg).float().div(255).unsqueeze(0) * (w - q) + q
     img_2 = vae.decode(v).sample
     img_2 = img_2.squeeze(0).mul(255).permute(1, 2, 0).detach().numpy()
