@@ -4,3 +4,4 @@ numpy~=1.24
 diffusers~=0.18
 fastapi~=0.97
 uvicorn~=0.23
+python-multipart~=0.0.6
