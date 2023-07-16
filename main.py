@@ -1,4 +1,4 @@
-import lzma
+import os
 import base64
 import struct
 from functools import lru_cache
@@ -9,9 +9,9 @@ import torch
 import numpy as np
 from diffusers.models import AutoencoderKL
 
-from fastapi import FastAPI, File, UploadFile, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response, PlainTextResponse
-import os
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, Response, RedirectResponse
+
 
 cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -38,23 +38,18 @@ def _encode(img_bytes: bytes) -> bytes:
     q, w = np.percentile(iiimg, [0.1, 99.9])
     iiimg = (((np.clip(iiimg, q, w) - q) / (w - q)) * 255).astype('uint8')
     iiimg = iiimg.squeeze(0)  # CHW
-    # print(len(iiimg.tobytes()))
     succ, comp = cv2.imencode(".webp", iiimg.reshape(-1, iiimg.shape[-1]), [cv2.IMWRITE_WEBP_QUALITY, 95])
     if not succ:
         raise ValueError("Latent Compression failed.")
     meta = struct.pack('ffII', q, w, iiimg.shape[1], iiimg.shape[2])
-    # b = lzma.compress(meta + comp.reshape(-1).tobytes(), preset=9, format=lzma.FORMAT_ALONE)
     b = meta + comp.reshape(-1).tobytes()
-    # print(len(b), len(lzma.compress(meta + iiimg.reshape(-1).tobytes(), preset=9, format=lzma.FORMAT_ALONE)))
     return b
 
 
 @lru_cache(maxsize=128)
 def _decode(e_bytes: bytes) -> bytes:
-    # data = lzma.decompress(e_bytes)
-    data = e_bytes
-    q, w, x, y = struct.unpack('ffII', data[:16])
-    pbytes = np.frombuffer(data[16:], dtype='uint8')
+    q, w, x, y = struct.unpack('ffII', e_bytes[:16])
+    pbytes = np.frombuffer(e_bytes[16:], dtype='uint8')
     iiimg = cv2.imdecode(pbytes, cv2.IMREAD_GRAYSCALE).reshape(4, x, y)
     v = (torch.from_numpy(iiimg).float().div(255).unsqueeze(0) * (w - q) + q).to(device)
     img_2 = vae.decode(v).sample
@@ -80,11 +75,11 @@ async def 上(request: Request):
     form = await request.form()
     contents = await form['file'].read()
     b = _encode(contents)
-    return PlainTextResponse(content='/image?' + urlencode({'q': base64.urlsafe_b64encode(b)}))
+    return RedirectResponse(url='/image?' + urlencode({'q': base64.urlsafe_b64encode(b)}), status_code=303)
 
 
-@app.get("/image")
+@app.get('/image')
 async def 下(q: str):
     b = base64.urlsafe_b64decode(q)
     bb = _decode(b)
-    return Response(content=bb, media_type="image/png")
+    return Response(content=bb, media_type="image/webp")
